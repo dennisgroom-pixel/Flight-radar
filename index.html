@@ -319,6 +319,7 @@ let state = {
   refreshTimer: null,
   viewMode: 'radar', // 'radar' | 'map'
   pinnedIcao: null,
+  selectedIcao: null,
 };
 
 let leafletMap = null;
@@ -366,15 +367,19 @@ function updateMap() {
   const seen = new Set();
   state.flights.forEach(f => {
     seen.add(f.icao);
-    const html = `<div class="plane-icon" style="transform: rotate(${f.heading}deg)">✈</div>`;
+    const isSelected = f.icao === state.selectedIcao;
+    const iconClass = isSelected ? 'plane-icon selected' : 'plane-icon';
+    const iconSize = isSelected ? 26 : 18;
+    const html = `<div class="${iconClass}" style="transform: rotate(${f.heading}deg)">✈</div>`;
     if (leafletPlaneMarkers.has(f.icao)) {
       const m = leafletPlaneMarkers.get(f.icao);
       m.setLatLng([f.lat, f.lon]);
-      m.setIcon(L.divIcon({ className: '', html, iconSize: [18, 18] }));
+      m.setIcon(L.divIcon({ className: '', html, iconSize: [iconSize, iconSize] }));
       m.setTooltipContent(tooltipFor(f));
+      if (isSelected) m.setZIndexOffset(1000); else m.setZIndexOffset(0);
     } else {
       const m = L.marker([f.lat, f.lon], {
-        icon: L.divIcon({ className: '', html, iconSize: [18, 18] }),
+        icon: L.divIcon({ className: '', html, iconSize: [iconSize, iconSize] }),
       }).addTo(leafletMap).bindTooltip(tooltipFor(f), { direction: 'top', offset: [0, -6] });
       m.on('click', () => pinFlight(f.icao));
       leafletPlaneMarkers.set(f.icao, m);
@@ -399,6 +404,20 @@ function pinFlight(icao) {
   state.pinnedIcao = icao;
   renderList();
   els.list.scrollTop = 0;
+}
+
+function selectFlight(icao) {
+  state.selectedIcao = icao;
+  drawRadar();
+  if (state.viewMode === 'map') {
+    updateMap();
+    const f = state.flights.find(x => x.icao === icao);
+    const marker = leafletPlaneMarkers.get(icao);
+    if (f && leafletMap && marker) {
+      leafletMap.panTo([f.lat, f.lon]);
+      marker.openTooltip();
+    }
+  }
 }
 
 function setViewMode(mode) {
@@ -588,17 +607,26 @@ function drawRadar() {
     const angle = toRad(f.brg - 90);
     const x = cx + Math.cos(angle) * r;
     const y = cy + Math.sin(angle) * r;
+    const isSelected = f.icao === state.selectedIcao;
+    const scale = isSelected ? 1.6 : 1;
 
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(toRad(f.heading));
+    if (isSelected) {
+      ctx.beginPath();
+      ctx.arc(0, 0, 11, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(77,210,255,0.6)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
     ctx.beginPath();
-    ctx.moveTo(0, -6);
-    ctx.lineTo(4, 5);
-    ctx.lineTo(0, 2);
-    ctx.lineTo(-4, 5);
+    ctx.moveTo(0, -6 * scale);
+    ctx.lineTo(4 * scale, 5 * scale);
+    ctx.lineTo(0, 2 * scale);
+    ctx.lineTo(-4 * scale, 5 * scale);
     ctx.closePath();
-    ctx.fillStyle = '#c8ff4d';
+    ctx.fillStyle = isSelected ? '#4dd2ff' : '#c8ff4d';
     ctx.fill();
     ctx.restore();
   });
@@ -662,6 +690,8 @@ function renderList() {
       }
       const idx = row.getAttribute('data-idx');
       const callsign = row.getAttribute('data-callsign');
+      const icao = row.getAttribute('data-icao');
+      selectFlight(icao);
       expandRoute(idx, callsign);
     });
   });
@@ -694,6 +724,18 @@ async function expandRoute(idx, callsign) {
     slot.innerHTML = `<div class="route-row">${airlineBit}<span>${route.from || '?'}</span><span class="arrow">→</span><span>${route.to || '?'}</span></div>`;
   } else {
     slot.innerHTML = '<div class="route-row unknown">no route on file for this callsign</div>';
+  }
+
+  // Backfill the airline name in the row header too, if we didn't already have one
+  if (route && route.airline) {
+    const row = els.list.querySelector(`.row[data-idx="${idx}"]`);
+    const rowTop = row && row.querySelector('.row-top');
+    if (rowTop && !rowTop.querySelector('.airline')) {
+      const span = document.createElement('span');
+      span.className = 'airline';
+      span.textContent = route.airline;
+      rowTop.appendChild(span);
+    }
   }
 }
 
