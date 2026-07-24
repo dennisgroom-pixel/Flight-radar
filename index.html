@@ -147,6 +147,17 @@
     padding: 12px 16px; border-bottom: 1px solid var(--line);
   }
   .row:active { background: var(--panel); }
+  .row.pinned {
+    background: rgba(200,255,77,0.06);
+    border-left: 3px solid var(--lime);
+    padding-left: 13px;
+  }
+  .pin-badge {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
+    color: #08130a; background: var(--lime);
+    padding: 2px 6px; border-radius: 4px; margin-right: 2px;
+    cursor: pointer;
+  }
   .heading-chip {
     width: 30px; height: 30px; border-radius: 50%;
     border: 1px solid var(--line); flex-shrink: 0;
@@ -181,6 +192,7 @@
     display: flex; align-items: center; gap: 8px;
   }
   .route-row .arrow { color: var(--dim); }
+  .route-row .route-airline { color: var(--amber); font-weight: 600; margin-right: 4px; }
   .route-row.loading, .route-row.unknown { color: var(--dim); font-style: italic; }
   .tap-hint {
     font-size: 10px; color: var(--dim); margin-top: 2px; letter-spacing: 0.3px;
@@ -269,18 +281,26 @@ function getAirlineName(callsign) {
   return AIRLINES[prefix] || null;
 }
 
-// Route (origin/destination) lookup cache — fetched on demand per callsign to conserve API rate limit
+// Route (origin/destination) + airline lookup — fetched on demand per callsign to be polite to the API.
+// adsbdb.com is a free, no-key, CORS-enabled community API built for exactly this callsign lookup.
 const routeCache = new Map();
 async function fetchRoute(callsign) {
   const key = callsign.trim();
   if (routeCache.has(key)) return routeCache.get(key);
   try {
-    const res = await fetch(`https://opensky-network.org/api/routes?callsign=${encodeURIComponent(key)}`);
+    const res = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(key)}`);
     if (!res.ok) throw new Error('not found');
     const data = await res.json();
-    const route = data.route && data.route.length >= 2
-      ? { from: data.route[0], to: data.route[data.route.length - 1] }
-      : null;
+    const fr = data.response && data.response.flightroute;
+    if (!fr) {
+      routeCache.set(key, null);
+      return null;
+    }
+    const route = {
+      airline: fr.airline ? fr.airline.name : null,
+      from: fr.origin ? `${fr.origin.icao_code} · ${fr.origin.municipality || fr.origin.name}` : null,
+      to: fr.destination ? `${fr.destination.icao_code} · ${fr.destination.municipality || fr.destination.name}` : null,
+    };
     routeCache.set(key, route);
     return route;
   } catch (err) {
@@ -298,6 +318,7 @@ let state = {
   sweepAngle: 0,
   refreshTimer: null,
   viewMode: 'radar', // 'radar' | 'map'
+  pinnedIcao: null,
 };
 
 let leafletMap = null;
@@ -355,6 +376,7 @@ function updateMap() {
       const m = L.marker([f.lat, f.lon], {
         icon: L.divIcon({ className: '', html, iconSize: [18, 18] }),
       }).addTo(leafletMap).bindTooltip(tooltipFor(f), { direction: 'top', offset: [0, -6] });
+      m.on('click', () => pinFlight(f.icao));
       leafletPlaneMarkers.set(f.icao, m);
     }
   });
@@ -371,6 +393,12 @@ function tooltipFor(f) {
   const altStr = f.altitudeFt !== null ? f.altitudeFt.toLocaleString() + ' ft' : '';
   const airlineStr = f.airline ? f.airline + ' · ' : '';
   return `${f.callsign} — ${airlineStr}${altStr}`;
+}
+
+function pinFlight(icao) {
+  state.pinnedIcao = icao;
+  renderList();
+  els.list.scrollTop = 0;
 }
 
 function setViewMode(mode) {
@@ -584,17 +612,31 @@ function renderList() {
     els.list.innerHTML = '';
     return;
   }
-  els.list.innerHTML = state.flights.map((f, i) => {
+
+  // Pinned flight (tapped on the map) floats to the top, rest stays distance-sorted.
+  let ordered = state.flights;
+  if (state.pinnedIcao) {
+    const pinned = state.flights.find(f => f.icao === state.pinnedIcao);
+    if (pinned) {
+      ordered = [pinned, ...state.flights.filter(f => f.icao !== state.pinnedIcao)];
+    } else {
+      state.pinnedIcao = null; // flight left range
+    }
+  }
+
+  els.list.innerHTML = ordered.map((f, i) => {
     const altStr = f.altitudeFt !== null ? f.altitudeFt.toLocaleString() + ' ft' : 'alt —';
     const spdStr = f.velocityMph !== null ? f.velocityMph + ' mph' : '';
     const vArrow = f.vertRate > 1 ? '↑' : f.vertRate < -1 ? '↓' : '';
     const airlineStr = f.airline ? `<span class="airline">${f.airline}</span>` : '';
     const canLookupRoute = f.callsign && f.callsign !== '—';
+    const isPinned = f.icao === state.pinnedIcao;
     return `
-      <div class="row" data-idx="${i}" data-callsign="${f.callsign}" ${canLookupRoute ? 'style="cursor:pointer"' : ''}>
+      <div class="row ${isPinned ? 'pinned' : ''}" data-idx="${i}" data-icao="${f.icao}" data-callsign="${f.callsign}" ${canLookupRoute ? 'style="cursor:pointer"' : ''}>
         <div class="heading-chip" style="transform: rotate(${f.heading}deg)">↑</div>
         <div class="row-main">
           <div class="row-top">
+            ${isPinned ? '<span class="pin-badge">FROM MAP ✕</span>' : ''}
             <span class="callsign">${f.callsign}</span>
             ${airlineStr}
           </div>
@@ -611,29 +653,48 @@ function renderList() {
   }).join('');
 
   els.list.querySelectorAll('.row[data-callsign]').forEach(row => {
-    row.addEventListener('click', async () => {
-      const idx = row.getAttribute('data-idx');
-      const callsign = row.getAttribute('data-callsign');
-      const slot = els.list.querySelector(`.route-slot[data-slot="${idx}"]`);
-      if (!slot || !callsign || callsign === '—') return;
-
-      // toggle: if already showing, clear it
-      if (slot.dataset.shown === 'true') {
-        slot.innerHTML = '';
-        slot.dataset.shown = 'false';
+    row.addEventListener('click', (evt) => {
+      const isPinClear = evt.target.closest('.pin-badge');
+      if (isPinClear) {
+        state.pinnedIcao = null;
+        renderList();
         return;
       }
-
-      slot.innerHTML = '<div class="route-row loading">looking up route…</div>';
-      slot.dataset.shown = 'true';
-      const route = await fetchRoute(callsign);
-      if (route) {
-        slot.innerHTML = `<div class="route-row"><span>${route.from}</span><span class="arrow">→</span><span>${route.to}</span></div>`;
-      } else {
-        slot.innerHTML = '<div class="route-row unknown">route not available for this flight</div>';
-      }
+      const idx = row.getAttribute('data-idx');
+      const callsign = row.getAttribute('data-callsign');
+      expandRoute(idx, callsign);
     });
   });
+
+  // If a flight was just pinned from the map, auto-expand its route info
+  if (state.pinnedIcao) {
+    const pinnedFlight = ordered[0];
+    if (pinnedFlight && pinnedFlight.callsign !== '—') {
+      expandRoute('0', pinnedFlight.callsign);
+    }
+  }
+}
+
+async function expandRoute(idx, callsign) {
+  const slot = els.list.querySelector(`.route-slot[data-slot="${idx}"]`);
+  if (!slot || !callsign || callsign === '—') return;
+
+  // toggle: if already showing, clear it (unless it was just auto-opened for a fresh pin)
+  if (slot.dataset.shown === 'true') {
+    slot.innerHTML = '';
+    slot.dataset.shown = 'false';
+    return;
+  }
+
+  slot.innerHTML = '<div class="route-row loading">looking up route…</div>';
+  slot.dataset.shown = 'true';
+  const route = await fetchRoute(callsign);
+  if (route && (route.from || route.to)) {
+    const airlineBit = route.airline ? `<span class="route-airline">${route.airline}</span>` : '';
+    slot.innerHTML = `<div class="route-row">${airlineBit}<span>${route.from || '?'}</span><span class="arrow">→</span><span>${route.to || '?'}</span></div>`;
+  } else {
+    slot.innerHTML = '<div class="route-row unknown">no route on file for this callsign</div>';
+  }
 }
 
 function render() {
