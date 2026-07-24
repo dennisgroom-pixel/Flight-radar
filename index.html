@@ -127,6 +127,10 @@
     color: var(--lime); font-size: 16px; line-height: 1;
     text-shadow: 0 0 4px rgba(0,0,0,0.8);
   }
+  .plane-icon.selected {
+    color: var(--blue); font-size: 22px;
+    text-shadow: 0 0 8px rgba(77,210,255,0.9), 0 0 2px rgba(0,0,0,0.9);
+  }
   .you-icon {
     width: 12px; height: 12px; border-radius: 50%;
     background: var(--blue); border: 2px solid #0a0e0d;
@@ -390,6 +394,7 @@ function updateMap() {
     if (!seen.has(icao)) {
       leafletMap.removeLayer(marker);
       leafletPlaneMarkers.delete(icao);
+      if (state.selectedIcao === icao) state.selectedIcao = null;
     }
   }
 }
@@ -402,11 +407,23 @@ function tooltipFor(f) {
 
 function pinFlight(icao) {
   state.pinnedIcao = icao;
+  applySelection(icao);
   renderList();
   els.list.scrollTop = 0;
 }
 
 function selectFlight(icao) {
+  applySelection(icao);
+}
+
+// Shared by both map taps and list taps — keeps exactly one tooltip open at a time
+// and updates the highlight in both views regardless of which one triggered it.
+function applySelection(icao) {
+  const prevIcao = state.selectedIcao;
+  if (prevIcao && prevIcao !== icao) {
+    const prevMarker = leafletPlaneMarkers.get(prevIcao);
+    if (prevMarker) prevMarker.closeTooltip();
+  }
   state.selectedIcao = icao;
   drawRadar();
   if (state.viewMode === 'map') {
@@ -608,23 +625,15 @@ function drawRadar() {
     const x = cx + Math.cos(angle) * r;
     const y = cy + Math.sin(angle) * r;
     const isSelected = f.icao === state.selectedIcao;
-    const scale = isSelected ? 1.6 : 1;
 
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(toRad(f.heading));
-    if (isSelected) {
-      ctx.beginPath();
-      ctx.arc(0, 0, 11, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(77,210,255,0.6)';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-    }
     ctx.beginPath();
-    ctx.moveTo(0, -6 * scale);
-    ctx.lineTo(4 * scale, 5 * scale);
-    ctx.lineTo(0, 2 * scale);
-    ctx.lineTo(-4 * scale, 5 * scale);
+    ctx.moveTo(0, -6);
+    ctx.lineTo(4, 5);
+    ctx.lineTo(0, 2);
+    ctx.lineTo(-4, 5);
     ctx.closePath();
     ctx.fillStyle = isSelected ? '#4dd2ff' : '#c8ff4d';
     ctx.fill();
