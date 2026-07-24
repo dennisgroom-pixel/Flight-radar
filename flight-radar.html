@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>OVERHEAD — Live Airspace</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #0a0e0d;
+    --panel: #101615;
+    --line: #1e2827;
+    --text: #e8ede9;
+    --dim: #7a8985;
+    --lime: #c8ff4d;
+    --blue: #4dd2ff;
+    --amber: #ffb84d;
+    --danger: #ff5d5d;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    overscroll-behavior: none;
+  }
+
+  .app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+
+  header {
+    padding: 14px 16px 10px;
+    border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; justify-content: space-between;
+    flex-shrink: 0;
+  }
+  h1 {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 28px; letter-spacing: 2px; margin: 0;
+    color: var(--lime);
+  }
+  h1 span { color: var(--text); }
+  .status {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px; color: var(--dim); text-align: right;
+  }
+  .status .dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--dim); margin-right: 5px;
+  }
+  .status.live .dot { background: var(--lime); box-shadow: 0 0 6px var(--lime); }
+  .status.err .dot { background: var(--danger); }
+
+  .controls {
+    display: flex; gap: 8px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    flex-shrink: 0; flex-wrap: wrap; align-items: center;
+    background: var(--panel);
+  }
+  .controls input[type="text"] {
+    background: var(--bg); border: 1px solid var(--line); color: var(--text);
+    font-family: 'DM Mono', monospace; font-size: 13px;
+    padding: 8px 10px; border-radius: 6px; width: 90px;
+  }
+  .controls input[type="text"]::placeholder { color: var(--dim); }
+  .controls label {
+    font-size: 11px; color: var(--dim); text-transform: uppercase;
+    letter-spacing: 0.5px; margin-right: 4px;
+  }
+  .btn {
+    background: var(--bg); border: 1px solid var(--line); color: var(--text);
+    font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500;
+    padding: 8px 14px; border-radius: 6px; cursor: pointer;
+  }
+  .btn.primary { background: var(--lime); color: #08130a; border-color: var(--lime); font-weight: 700; }
+  .btn:active { transform: scale(0.97); }
+  .radius-wrap { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 140px; }
+  input[type="range"] {
+    flex: 1; accent-color: var(--lime); height: 4px;
+  }
+  .radius-val {
+    font-family: 'DM Mono', monospace; color: var(--lime); font-size: 13px; width: 54px; text-align: right;
+  }
+
+  .radar-wrap {
+    position: relative; flex-shrink: 0;
+    display: flex; justify-content: center;
+    padding: 14px 0 6px;
+    background: radial-gradient(ellipse at center, #0d1413 0%, #090c0b 100%);
+    border-bottom: 1px solid var(--line);
+  }
+  canvas { display: block; }
+
+  .empty-note {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    font-family: 'DM Mono', monospace; font-size: 12px; color: var(--dim);
+    text-align: center; pointer-events: none; width: 200px;
+  }
+
+  .list {
+    flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
+  .row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+  }
+  .row:active { background: var(--panel); }
+  .heading-chip {
+    width: 30px; height: 30px; border-radius: 50%;
+    border: 1px solid var(--line); flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; color: var(--blue);
+  }
+  .row-main { flex: 1; min-width: 0; }
+  .callsign {
+    font-family: 'DM Mono', monospace; font-weight: 700; font-size: 14px;
+    color: var(--text); letter-spacing: 0.5px;
+  }
+  .sub {
+    font-size: 11px; color: var(--dim); margin-top: 2px;
+    display: flex; gap: 10px; flex-wrap: wrap;
+  }
+  .row-metrics { text-align: right; flex-shrink: 0; }
+  .dist {
+    font-family: 'DM Mono', monospace; font-size: 15px; font-weight: 700; color: var(--lime);
+  }
+  .alt {
+    font-size: 11px; color: var(--dim); margin-top: 2px;
+    font-family: 'DM Mono', monospace;
+  }
+
+  .footer-note {
+    padding: 10px 16px; font-size: 11px; color: var(--dim);
+    text-align: center; border-top: 1px solid var(--line);
+    font-family: 'DM Mono', monospace; flex-shrink: 0;
+  }
+
+  ::-webkit-scrollbar { width: 0; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div>
+      <h1>OVER<span>HEAD</span></h1>
+    </div>
+    <div class="status" id="status"><span class="dot"></span>connecting</div>
+  </header>
+
+  <div class="controls">
+    <label>Lat</label>
+    <input type="text" id="latInput" placeholder="42.33">
+    <label>Lon</label>
+    <input type="text" id="lonInput" placeholder="-83.90">
+    <button class="btn" id="locBtn">📍 Use my location</button>
+  </div>
+  <div class="controls">
+    <div class="radius-wrap">
+      <label>Radius</label>
+      <input type="range" id="radiusSlider" min="5" max="150" value="40" step="5">
+      <span class="radius-val" id="radiusVal">40 mi</span>
+    </div>
+    <button class="btn primary" id="refreshBtn">Refresh</button>
+  </div>
+
+  <div class="radar-wrap">
+    <canvas id="radar" width="320" height="320"></canvas>
+    <div class="empty-note" id="emptyNote"></div>
+  </div>
+
+  <div class="list" id="list"></div>
+
+  <div class="footer-note" id="footerNote">Set your location to begin scanning</div>
+</div>
+
+<script>
+const R_EARTH_MI = 3958.8;
+
+let state = {
+  lat: null,
+  lon: null,
+  radiusMi: 40,
+  flights: [],
+  lastFetch: null,
+  sweepAngle: 0,
+  refreshTimer: null,
+};
+
+const els = {
+  status: document.getElementById('status'),
+  latInput: document.getElementById('latInput'),
+  lonInput: document.getElementById('lonInput'),
+  locBtn: document.getElementById('locBtn'),
+  radiusSlider: document.getElementById('radiusSlider'),
+  radiusVal: document.getElementById('radiusVal'),
+  refreshBtn: document.getElementById('refreshBtn'),
+  canvas: document.getElementById('radar'),
+  emptyNote: document.getElementById('emptyNote'),
+  list: document.getElementById('list'),
+  footerNote: document.getElementById('footerNote'),
+};
+
+const ctx = els.canvas.getContext('2d');
+
+function setStatus(mode, text) {
+  els.status.className = 'status ' + mode;
+  els.status.innerHTML = '<span class="dot"></span>' + text;
+}
+
+function toRad(d) { return d * Math.PI / 180; }
+function toDeg(r) { return r * 180 / Math.PI; }
+
+function haversineMi(lat1, lon1, lat2, lon2) {
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  return R_EARTH_MI * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function bearing(lat1, lon1, lat2, lon2) {
+  const y = Math.sin(toRad(lon2-lon1)) * Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1))*Math.sin(toRad(lat2)) -
+            Math.sin(toRad(lat1))*Math.cos(toRad(lat2))*Math.cos(toRad(lon2-lon1));
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+function boundingBox(lat, lon, radiusMi) {
+  const latDelta = radiusMi / 69.0;
+  const lonDelta = radiusMi / (69.0 * Math.cos(toRad(lat)) || 1);
+  return {
+    lamin: lat - latDelta, lamax: lat + latDelta,
+    lomin: lon - lonDelta, lomax: lon + lonDelta,
+  };
+}
+
+async function fetchFlights() {
+  if (state.lat === null || state.lon === null) return;
+  setStatus('', 'scanning…');
+  const box = boundingBox(state.lat, state.lon, state.radiusMi);
+  const url = `https://opensky-network.org/api/states/all?lamin=${box.lamin}&lomin=${box.lomin}&lamax=${box.lamax}&lomax=${box.lomax}`;
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const raw = data.states || [];
+
+    const flights = raw
+      .filter(s => s[6] !== null && s[5] !== null && !s[8]) // has lat/lon, not on ground
+      .map(s => {
+        const lat = s[6], lon = s[5];
+        const dist = haversineMi(state.lat, state.lon, lat, lon);
+        return {
+          icao: s[0],
+          callsign: (s[1] || '').trim() || '—',
+          country: s[2],
+          lon, lat,
+          altitudeFt: s[7] !== null ? Math.round(s[7] * 3.28084) : null,
+          velocityMph: s[9] !== null ? Math.round(s[9] * 2.23694) : null,
+          heading: s[10] !== null ? Math.round(s[10]) : 0,
+          vertRate: s[11],
+          distMi: dist,
+          brg: bearing(state.lat, state.lon, lat, lon),
+        };
+      })
+      .filter(f => f.distMi <= state.radiusMi)
+      .sort((a, b) => a.distMi - b.distMi);
+
+    state.flights = flights;
+    state.lastFetch = new Date();
+    setStatus('live', flights.length + ' aircraft');
+    render();
+  } catch (err) {
+    setStatus('err', 'connection error');
+    els.footerNote.textContent = 'Could not reach OpenSky Network — will retry automatically';
+  }
+}
+
+function drawRadar() {
+  const w = els.canvas.width, h = els.canvas.height;
+  const cx = w/2, cy = h/2, maxR = w/2 - 24;
+
+  ctx.clearRect(0, 0, w, h);
+
+  // range rings
+  ctx.strokeStyle = 'rgba(200,255,77,0.12)';
+  ctx.lineWidth = 1;
+  for (let i = 1; i <= 3; i++) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, maxR * i / 3, 0, Math.PI*2);
+    ctx.stroke();
+  }
+  // crosshairs
+  ctx.beginPath();
+  ctx.moveTo(cx - maxR, cy); ctx.lineTo(cx + maxR, cy);
+  ctx.moveTo(cx, cy - maxR); ctx.lineTo(cx, cy + maxR);
+  ctx.stroke();
+
+  // ring labels
+  ctx.fillStyle = 'rgba(122,137,133,0.7)';
+  ctx.font = '10px DM Mono, monospace';
+  for (let i = 1; i <= 3; i++) {
+    const val = Math.round(state.radiusMi * i / 3);
+    ctx.fillText(val + 'mi', cx + 4, cy - (maxR * i / 3) + 10);
+  }
+
+  // sweep
+  const grad = ctx.createConicGradient ?
+    (() => {
+      const g = ctx.createConicGradient(toRad(state.sweepAngle - 90), cx, cy);
+      g.addColorStop(0, 'rgba(200,255,77,0.35)');
+      g.addColorStop(0.08, 'rgba(200,255,77,0)');
+      g.addColorStop(1, 'rgba(200,255,77,0)');
+      return g;
+    })() : null;
+  if (grad) {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, maxR, 0, Math.PI*2);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }
+
+  // center marker (you)
+  ctx.beginPath();
+  ctx.arc(cx, cy, 4, 0, Math.PI*2);
+  ctx.fillStyle = '#4dd2ff';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx, cy, 7, 0, Math.PI*2);
+  ctx.strokeStyle = 'rgba(77,210,255,0.5)';
+  ctx.stroke();
+
+  // aircraft blips
+  state.flights.forEach(f => {
+    const r = (f.distMi / state.radiusMi) * maxR;
+    const angle = toRad(f.brg - 90);
+    const x = cx + Math.cos(angle) * r;
+    const y = cy + Math.sin(angle) * r;
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(toRad(f.heading));
+    ctx.beginPath();
+    ctx.moveTo(0, -6);
+    ctx.lineTo(4, 5);
+    ctx.lineTo(0, 2);
+    ctx.lineTo(-4, 5);
+    ctx.closePath();
+    ctx.fillStyle = '#c8ff4d';
+    ctx.fill();
+    ctx.restore();
+  });
+
+  els.emptyNote.textContent = state.flights.length === 0 && state.lat !== null
+    ? 'No aircraft detected in range' : '';
+}
+
+function renderList() {
+  if (state.flights.length === 0) {
+    els.list.innerHTML = '';
+    return;
+  }
+  els.list.innerHTML = state.flights.map(f => {
+    const altStr = f.altitudeFt !== null ? f.altitudeFt.toLocaleString() + ' ft' : 'alt —';
+    const spdStr = f.velocityMph !== null ? f.velocityMph + ' mph' : '';
+    const vArrow = f.vertRate > 1 ? '↑' : f.vertRate < -1 ? '↓' : '';
+    return `
+      <div class="row">
+        <div class="heading-chip" style="transform: rotate(${f.heading}deg)">↑</div>
+        <div class="row-main">
+          <div class="callsign">${f.callsign}</div>
+          <div class="sub"><span>${f.country || ''}</span><span>${spdStr}</span><span>${vArrow}</span></div>
+        </div>
+        <div class="row-metrics">
+          <div class="dist">${f.distMi.toFixed(1)} mi</div>
+          <div class="alt">${altStr}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function render() {
+  drawRadar();
+  renderList();
+  if (state.lastFetch) {
+    els.footerNote.textContent = 'Last updated ' + state.lastFetch.toLocaleTimeString() + ' · auto-refresh every 20s';
+  }
+}
+
+function sweepLoop() {
+  state.sweepAngle = (state.sweepAngle + 2) % 360;
+  drawRadar();
+  requestAnimationFrame(sweepLoop);
+}
+requestAnimationFrame(sweepLoop);
+
+function scheduleRefresh() {
+  if (state.refreshTimer) clearInterval(state.refreshTimer);
+  state.refreshTimer = setInterval(fetchFlights, 20000);
+}
+
+els.locBtn.addEventListener('click', () => {
+  if (!navigator.geolocation) {
+    setStatus('err', 'no geolocation support');
+    return;
+  }
+  setStatus('', 'locating…');
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      state.lat = pos.coords.latitude;
+      state.lon = pos.coords.longitude;
+      els.latInput.value = state.lat.toFixed(4);
+      els.lonInput.value = state.lon.toFixed(4);
+      fetchFlights();
+      scheduleRefresh();
+    },
+    err => {
+      setStatus('err', 'location denied — enter manually');
+    },
+    { enableHighAccuracy: false, timeout: 8000 }
+  );
+});
+
+function applyManualLocation() {
+  const lat = parseFloat(els.latInput.value);
+  const lon = parseFloat(els.lonInput.value);
+  if (isNaN(lat) || isNaN(lon)) return;
+  state.lat = lat;
+  state.lon = lon;
+  fetchFlights();
+  scheduleRefresh();
+}
+
+els.latInput.addEventListener('change', applyManualLocation);
+els.lonInput.addEventListener('change', applyManualLocation);
+
+els.radiusSlider.addEventListener('input', () => {
+  state.radiusMi = parseInt(els.radiusSlider.value, 10);
+  els.radiusVal.textContent = state.radiusMi + ' mi';
+  drawRadar();
+});
+els.radiusSlider.addEventListener('change', fetchFlights);
+
+els.refreshBtn.addEventListener('click', fetchFlights);
+
+// initial render
+drawRadar();
+</script>
+</body>
+</html>
