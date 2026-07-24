@@ -6,6 +6,7 @@
 <title>OVERHEAD — Live Airspace</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;700&family=DM+Mono:wght@400;500&display=swap');
+  @import url('https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css');
 
   :root {
     --bg: #0a0e0d;
@@ -93,6 +94,45 @@
   }
   canvas { display: block; }
 
+  .view-toggle {
+    display: flex; gap: 4px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 3px;
+  }
+  .view-toggle button {
+    background: transparent; border: none; color: var(--dim);
+    font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 600;
+    padding: 6px 12px; border-radius: 6px; cursor: pointer;
+  }
+  .view-toggle button.active { background: var(--lime); color: #08130a; }
+
+  .map-wrap {
+    position: relative; flex-shrink: 0; height: 320px;
+    border-bottom: 1px solid var(--line);
+    display: none;
+  }
+  .map-wrap.visible { display: block; }
+  #mapEl { width: 100%; height: 100%; background: var(--bg); }
+
+  /* Dark-theme the Leaflet chrome to match the rest of the app */
+  .leaflet-container { background: #0d1413; }
+  .leaflet-control-zoom a {
+    background: var(--panel) !important; color: var(--text) !important;
+    border-color: var(--line) !important;
+  }
+  .leaflet-control-attribution {
+    background: rgba(10,14,13,0.75) !important; color: var(--dim) !important;
+  }
+  .leaflet-control-attribution a { color: var(--blue) !important; }
+  .plane-icon {
+    color: var(--lime); font-size: 16px; line-height: 1;
+    text-shadow: 0 0 4px rgba(0,0,0,0.8);
+  }
+  .you-icon {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--blue); border: 2px solid #0a0e0d;
+    box-shadow: 0 0 8px var(--blue);
+  }
+
   .empty-note {
     position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
     font-family: 'DM Mono', monospace; font-size: 12px; color: var(--dim);
@@ -114,9 +154,13 @@
     font-size: 14px; color: var(--blue);
   }
   .row-main { flex: 1; min-width: 0; }
+  .row-top { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
   .callsign {
     font-family: 'DM Mono', monospace; font-weight: 700; font-size: 14px;
     color: var(--text); letter-spacing: 0.5px;
+  }
+  .airline {
+    font-size: 12px; color: var(--amber); font-weight: 500;
   }
   .sub {
     font-size: 11px; color: var(--dim); margin-top: 2px;
@@ -129,6 +173,17 @@
   .alt {
     font-size: 11px; color: var(--dim); margin-top: 2px;
     font-family: 'DM Mono', monospace;
+  }
+  .route-row {
+    padding: 0 16px 12px 56px; margin-top: -8px;
+    border-bottom: 1px solid var(--line);
+    font-family: 'DM Mono', monospace; font-size: 12px; color: var(--blue);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .route-row .arrow { color: var(--dim); }
+  .route-row.loading, .route-row.unknown { color: var(--dim); font-style: italic; }
+  .tap-hint {
+    font-size: 10px; color: var(--dim); margin-top: 2px; letter-spacing: 0.3px;
   }
 
   .footer-note {
@@ -163,12 +218,19 @@
       <input type="range" id="radiusSlider" min="5" max="150" value="40" step="5">
       <span class="radius-val" id="radiusVal">40 mi</span>
     </div>
+    <div class="view-toggle">
+      <button id="radarViewBtn" class="active">Radar</button>
+      <button id="mapViewBtn">Map</button>
+    </div>
     <button class="btn primary" id="refreshBtn">Refresh</button>
   </div>
 
-  <div class="radar-wrap">
+  <div class="radar-wrap" id="radarWrap">
     <canvas id="radar" width="320" height="320"></canvas>
     <div class="empty-note" id="emptyNote"></div>
+  </div>
+  <div class="map-wrap" id="mapWrap">
+    <div id="mapEl"></div>
   </div>
 
   <div class="list" id="list"></div>
@@ -176,8 +238,56 @@
   <div class="footer-note" id="footerNote">Set your location to begin scanning</div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 const R_EARTH_MI = 3958.8;
+
+// Common ICAO airline prefixes -> airline name (covers most US/major international carriers)
+const AIRLINES = {
+  AAL: 'American Airlines', UAL: 'United Airlines', DAL: 'Delta Air Lines', SWA: 'Southwest Airlines',
+  JBU: 'JetBlue', ASA: 'Alaska Airlines', SKW: 'SkyWest', RPA: 'Republic Airways', ENY: 'Envoy Air',
+  FFT: 'Frontier Airlines', NKS: 'Spirit Airlines', HAL: 'Hawaiian Airlines', AAY: 'Allegiant Air',
+  EDV: 'Endeavor Air', GJS: 'GoJet Airlines', ASH: 'Mesa Airlines', PDT: 'Piedmont Airlines',
+  QXE: 'Horizon Air', UPS: 'UPS Airlines', FDX: 'FedEx Express', GTI: 'Atlas Air',
+  ACA: 'Air Canada', WJA: 'WestJet', POE: 'Porter Airlines',
+  BAW: 'British Airways', VIR: 'Virgin Atlantic', EZY: 'easyJet', RYR: 'Ryanair', WZZ: 'Wizz Air',
+  DLH: 'Lufthansa', AFR: 'Air France', KLM: 'KLM', IBE: 'Iberia', SWR: 'SWISS', AUA: 'Austrian Airlines',
+  SAS: 'SAS Scandinavian', FIN: 'Finnair', TAP: 'TAP Air Portugal', LOT: 'LOT Polish Airlines',
+  THY: 'Turkish Airlines', ETH: 'Ethiopian Airlines', MSR: 'EgyptAir', RAM: 'Royal Air Maroc',
+  UAE: 'Emirates', QTR: 'Qatar Airways', ETD: 'Etihad Airways', SVA: 'Saudia', GFA: 'Gulf Air',
+  CPA: 'Cathay Pacific', SIA: 'Singapore Airlines', ANA: 'All Nippon Airways', JAL: 'Japan Airlines',
+  KAL: 'Korean Air', AAR: 'Asiana Airlines', CCA: 'Air China', CES: 'China Eastern', CSN: 'China Southern',
+  EVA: 'EVA Air', CAL: 'China Airlines', THA: 'Thai Airways', MAS: 'Malaysia Airlines',
+  GIA: 'Garuda Indonesia', PAL: 'Philippine Airlines', AIC: 'Air India', VTI: 'Vistara', IGO: 'IndiGo',
+  QFA: 'Qantas', JST: 'Jetstar', ANZ: 'Air New Zealand', VOZ: 'Virgin Australia',
+  LAN: 'LATAM Airlines', GLO: 'GOL Linhas Aereas', AZU: 'Azul Brazilian Airlines', ARG: 'Aerolineas Argentinas',
+  AMX: 'Aeromexico', VOI: 'Volaris', AVA: 'Avianca', CMP: 'Copa Airlines',
+};
+function getAirlineName(callsign) {
+  if (!callsign || callsign === '—') return null;
+  const prefix = callsign.trim().slice(0, 3).toUpperCase();
+  return AIRLINES[prefix] || null;
+}
+
+// Route (origin/destination) lookup cache — fetched on demand per callsign to conserve API rate limit
+const routeCache = new Map();
+async function fetchRoute(callsign) {
+  const key = callsign.trim();
+  if (routeCache.has(key)) return routeCache.get(key);
+  try {
+    const res = await fetch(`https://opensky-network.org/api/routes?callsign=${encodeURIComponent(key)}`);
+    if (!res.ok) throw new Error('not found');
+    const data = await res.json();
+    const route = data.route && data.route.length >= 2
+      ? { from: data.route[0], to: data.route[data.route.length - 1] }
+      : null;
+    routeCache.set(key, route);
+    return route;
+  } catch (err) {
+    routeCache.set(key, null);
+    return null;
+  }
+}
 
 let state = {
   lat: null,
@@ -187,7 +297,98 @@ let state = {
   lastFetch: null,
   sweepAngle: 0,
   refreshTimer: null,
+  viewMode: 'radar', // 'radar' | 'map'
 };
+
+let leafletMap = null;
+let leafletUserMarker = null;
+let leafletRadiusCircle = null;
+let leafletPlaneMarkers = new Map(); // icao -> marker
+
+function initMap() {
+  if (leafletMap) return;
+  leafletMap = L.map('mapEl', {
+    zoomControl: true,
+    attributionControl: true,
+  }).setView([42.33, -83.90], 9);
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+    maxZoom: 19,
+  }).addTo(leafletMap);
+}
+
+function updateMap() {
+  if (!leafletMap || state.lat === null) return;
+
+  // user position + radius circle
+  if (!leafletUserMarker) {
+    leafletUserMarker = L.marker([state.lat, state.lon], {
+      icon: L.divIcon({ className: '', html: '<div class="you-icon"></div>', iconSize: [12, 12] }),
+    }).addTo(leafletMap);
+    leafletMap.setView([state.lat, state.lon], 9);
+  } else {
+    leafletUserMarker.setLatLng([state.lat, state.lon]);
+  }
+
+  const radiusMeters = state.radiusMi * 1609.34;
+  if (!leafletRadiusCircle) {
+    leafletRadiusCircle = L.circle([state.lat, state.lon], {
+      radius: radiusMeters, color: '#c8ff4d', weight: 1, fillOpacity: 0.04, opacity: 0.35,
+    }).addTo(leafletMap);
+  } else {
+    leafletRadiusCircle.setLatLng([state.lat, state.lon]);
+    leafletRadiusCircle.setRadius(radiusMeters);
+  }
+
+  // aircraft markers — keep by icao so they don't flicker between refreshes
+  const seen = new Set();
+  state.flights.forEach(f => {
+    seen.add(f.icao);
+    const html = `<div class="plane-icon" style="transform: rotate(${f.heading}deg)">✈</div>`;
+    if (leafletPlaneMarkers.has(f.icao)) {
+      const m = leafletPlaneMarkers.get(f.icao);
+      m.setLatLng([f.lat, f.lon]);
+      m.setIcon(L.divIcon({ className: '', html, iconSize: [18, 18] }));
+      m.setTooltipContent(tooltipFor(f));
+    } else {
+      const m = L.marker([f.lat, f.lon], {
+        icon: L.divIcon({ className: '', html, iconSize: [18, 18] }),
+      }).addTo(leafletMap).bindTooltip(tooltipFor(f), { direction: 'top', offset: [0, -6] });
+      leafletPlaneMarkers.set(f.icao, m);
+    }
+  });
+  // remove markers for aircraft no longer in range
+  for (const [icao, marker] of leafletPlaneMarkers.entries()) {
+    if (!seen.has(icao)) {
+      leafletMap.removeLayer(marker);
+      leafletPlaneMarkers.delete(icao);
+    }
+  }
+}
+
+function tooltipFor(f) {
+  const altStr = f.altitudeFt !== null ? f.altitudeFt.toLocaleString() + ' ft' : '';
+  const airlineStr = f.airline ? f.airline + ' · ' : '';
+  return `${f.callsign} — ${airlineStr}${altStr}`;
+}
+
+function setViewMode(mode) {
+  state.viewMode = mode;
+  els.radarViewBtn.classList.toggle('active', mode === 'radar');
+  els.mapViewBtn.classList.toggle('active', mode === 'map');
+  els.radarWrap.style.display = mode === 'radar' ? 'flex' : 'none';
+  els.mapWrap.classList.toggle('visible', mode === 'map');
+
+  if (mode === 'map') {
+    initMap();
+    // Leaflet needs a size recalculation after its container becomes visible
+    setTimeout(() => {
+      leafletMap.invalidateSize();
+      updateMap();
+    }, 50);
+  }
+}
 
 const els = {
   status: document.getElementById('status'),
@@ -201,6 +402,10 @@ const els = {
   emptyNote: document.getElementById('emptyNote'),
   list: document.getElementById('list'),
   footerNote: document.getElementById('footerNote'),
+  radarWrap: document.getElementById('radarWrap'),
+  mapWrap: document.getElementById('mapWrap'),
+  radarViewBtn: document.getElementById('radarViewBtn'),
+  mapViewBtn: document.getElementById('mapViewBtn'),
 };
 
 const ctx = els.canvas.getContext('2d');
@@ -239,29 +444,38 @@ function boundingBox(lat, lon, radiusMi) {
 async function fetchFlights() {
   if (state.lat === null || state.lon === null) return;
   setStatus('', 'scanning…');
-  const box = boundingBox(state.lat, state.lon, state.radiusMi);
-  const url = `https://opensky-network.org/api/states/all?lamin=${box.lamin}&lomin=${box.lomin}&lamax=${box.lamax}&lomax=${box.lomax}`;
+
+  // airplanes.live: free, no-key ADS-B API built for exactly this point+radius query.
+  // Radius param is nautical miles; we convert from the mi the UI works in.
+  const radiusNm = Math.min(state.radiusMi * 0.868976, 250).toFixed(2);
+  const url = `https://api.airplanes.live/v2/point/${state.lat}/${state.lon}/${radiusNm}`;
 
   try {
     const res = await fetch(url);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' from airplanes.live');
     const data = await res.json();
-    const raw = data.states || [];
+    const raw = data.ac || data.aircraft || [];
 
     const flights = raw
-      .filter(s => s[6] !== null && s[5] !== null && !s[8]) // has lat/lon, not on ground
-      .map(s => {
-        const lat = s[6], lon = s[5];
+      .filter(a => typeof a.lat === 'number' && typeof a.lon === 'number' && a.alt_baro !== 'ground')
+      .map(a => {
+        const lat = a.lat, lon = a.lon;
         const dist = haversineMi(state.lat, state.lon, lat, lon);
+        const callsign = (a.flight || '').trim() || '—';
+        const heading = typeof a.track === 'number' ? Math.round(a.track)
+          : (typeof a.mag_heading === 'number' ? Math.round(a.mag_heading) : 0);
+        const vertRate = typeof a.baro_rate === 'number' ? a.baro_rate
+          : (typeof a.geom_rate === 'number' ? a.geom_rate : 0);
         return {
-          icao: s[0],
-          callsign: (s[1] || '').trim() || '—',
-          country: s[2],
+          icao: a.hex,
+          callsign,
+          airline: getAirlineName(callsign),
+          country: null,
           lon, lat,
-          altitudeFt: s[7] !== null ? Math.round(s[7] * 3.28084) : null,
-          velocityMph: s[9] !== null ? Math.round(s[9] * 2.23694) : null,
-          heading: s[10] !== null ? Math.round(s[10]) : 0,
-          vertRate: s[11],
+          altitudeFt: typeof a.alt_baro === 'number' ? Math.round(a.alt_baro) : null,
+          velocityMph: typeof a.gs === 'number' ? Math.round(a.gs * 1.15078) : null,
+          heading,
+          vertRate,
           distMi: dist,
           brg: bearing(state.lat, state.lon, lat, lon),
         };
@@ -272,10 +486,15 @@ async function fetchFlights() {
     state.flights = flights;
     state.lastFetch = new Date();
     setStatus('live', flights.length + ' aircraft');
+    els.footerNote.textContent = 'Last updated ' + state.lastFetch.toLocaleTimeString() + ' · auto-refresh every 20s';
     render();
   } catch (err) {
     setStatus('err', 'connection error');
-    els.footerNote.textContent = 'Could not reach OpenSky Network — will retry automatically';
+    // Surface the real cause instead of a generic message — CORS failures, offline,
+    // and HTTP errors all look different here and matter for debugging.
+    const reason = (err && err.message) ? err.message : 'unknown error';
+    els.footerNote.textContent = `Could not reach airplanes.live (${reason}) — will retry automatically`;
+    console.error('Flight fetch failed:', err);
   }
 }
 
@@ -365,29 +584,62 @@ function renderList() {
     els.list.innerHTML = '';
     return;
   }
-  els.list.innerHTML = state.flights.map(f => {
+  els.list.innerHTML = state.flights.map((f, i) => {
     const altStr = f.altitudeFt !== null ? f.altitudeFt.toLocaleString() + ' ft' : 'alt —';
     const spdStr = f.velocityMph !== null ? f.velocityMph + ' mph' : '';
     const vArrow = f.vertRate > 1 ? '↑' : f.vertRate < -1 ? '↓' : '';
+    const airlineStr = f.airline ? `<span class="airline">${f.airline}</span>` : '';
+    const canLookupRoute = f.callsign && f.callsign !== '—';
     return `
-      <div class="row">
+      <div class="row" data-idx="${i}" data-callsign="${f.callsign}" ${canLookupRoute ? 'style="cursor:pointer"' : ''}>
         <div class="heading-chip" style="transform: rotate(${f.heading}deg)">↑</div>
         <div class="row-main">
-          <div class="callsign">${f.callsign}</div>
+          <div class="row-top">
+            <span class="callsign">${f.callsign}</span>
+            ${airlineStr}
+          </div>
           <div class="sub"><span>${f.country || ''}</span><span>${spdStr}</span><span>${vArrow}</span></div>
+          ${canLookupRoute ? '<div class="tap-hint">tap for route</div>' : ''}
         </div>
         <div class="row-metrics">
           <div class="dist">${f.distMi.toFixed(1)} mi</div>
           <div class="alt">${altStr}</div>
         </div>
       </div>
+      <div class="route-slot" data-slot="${i}"></div>
     `;
   }).join('');
+
+  els.list.querySelectorAll('.row[data-callsign]').forEach(row => {
+    row.addEventListener('click', async () => {
+      const idx = row.getAttribute('data-idx');
+      const callsign = row.getAttribute('data-callsign');
+      const slot = els.list.querySelector(`.route-slot[data-slot="${idx}"]`);
+      if (!slot || !callsign || callsign === '—') return;
+
+      // toggle: if already showing, clear it
+      if (slot.dataset.shown === 'true') {
+        slot.innerHTML = '';
+        slot.dataset.shown = 'false';
+        return;
+      }
+
+      slot.innerHTML = '<div class="route-row loading">looking up route…</div>';
+      slot.dataset.shown = 'true';
+      const route = await fetchRoute(callsign);
+      if (route) {
+        slot.innerHTML = `<div class="route-row"><span>${route.from}</span><span class="arrow">→</span><span>${route.to}</span></div>`;
+      } else {
+        slot.innerHTML = '<div class="route-row unknown">route not available for this flight</div>';
+      }
+    });
+  });
 }
 
 function render() {
   drawRadar();
   renderList();
+  if (state.viewMode === 'map') updateMap();
   if (state.lastFetch) {
     els.footerNote.textContent = 'Last updated ' + state.lastFetch.toLocaleTimeString() + ' · auto-refresh every 20s';
   }
@@ -448,6 +700,9 @@ els.radiusSlider.addEventListener('input', () => {
 els.radiusSlider.addEventListener('change', fetchFlights);
 
 els.refreshBtn.addEventListener('click', fetchFlights);
+
+els.radarViewBtn.addEventListener('click', () => setViewMode('radar'));
+els.mapViewBtn.addEventListener('click', () => setViewMode('map'));
 
 // initial render
 drawRadar();
